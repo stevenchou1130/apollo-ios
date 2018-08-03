@@ -24,12 +24,6 @@ public struct GraphQLHTTPResponseError: Error, LocalizedError {
     public let response: HTTPURLResponse
     public let kind: ErrorKind
 
-    public init(body: Data? = nil, response: HTTPURLResponse, kind: ErrorKind) {
-        self.body = body
-        self.response = response
-        self.kind = kind
-    }
-
     public var bodyDescription: String {
         if let body = body {
             if let description = String(data: body, encoding: response.textEncoding ?? .utf8) {
@@ -47,11 +41,24 @@ public struct GraphQLHTTPResponseError: Error, LocalizedError {
     }
 }
 
+/// Used to intercept the http requests/errors/responses. This allows modifying url requests dynamically without recreating transports
+public protocol HTTPNetworkTransportDelegate: class {
+    func intercept() -> HTTPNetworkTransportInterception
+}
+
+/// An encapsulation of state for a single request (response/error) pair. If any method returns non-null it will be used in the http pipeline
+public protocol HTTPNetworkTransportInterception {
+    func willSend(request: URLRequest) -> URLRequest?
+    func didRecieve(error: Error) -> Error?
+    func didRecieve(response: HTTPURLResponse) -> HTTPURLResponse?
+}
+
 /// A network transport that uses HTTP POST requests to send GraphQL operations to a server, and that uses `URLSession` as the networking implementation.
 public class HTTPNetworkTransport: NetworkTransport {
     let url: URL
     let session: URLSession
     let serializationFormat = JSONSerializationFormat.self
+    public weak var delegate: HTTPNetworkTransportDelegate?
 
     /// Creates a network transport with the specified server URL and session configuration.
     ///
@@ -80,21 +87,26 @@ public class HTTPNetworkTransport: NetworkTransport {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let body = requestBody(for: operation)
-
-        if sendOperationIdentifiers, let operationIdentifier = operation.operationIdentifier {
-            request.setValue(operationIdentifier, forHTTPHeaderField: "x-Apollo-Operation-Id")
-        }
-
         request.httpBody = try! serializationFormat.serialize(value: body)
-
+        let interception = delegate?.intercept()
+        if let interceptedRequest = interception?.willSend(request: request) {
+            request = interceptedRequest
+        }
         let task = session.dataTask(with: request) { (data: Data?, response: URLResponse?, error: Error?) in
-            if error != nil {
+            if var error = error {
+                if let interceptedError = interception?.didRecieve(error: error) {
+                    error = interceptedError
+                }
                 completionHandler(nil, error)
                 return
             }
 
-            guard let httpResponse = response as? HTTPURLResponse else {
+            guard var httpResponse = response as? HTTPURLResponse else {
                 fatalError("Response should be an HTTPURLResponse")
+            }
+
+            if let interceptedResponse = interception?.didRecieve(response: httpResponse) {
+                httpResponse = interceptedResponse
             }
 
             if (!httpResponse.isSuccessful) {
