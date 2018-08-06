@@ -41,24 +41,11 @@ public struct GraphQLHTTPResponseError: Error, LocalizedError {
     }
 }
 
-/// Used to intercept the http requests/errors/responses. This allows modifying url requests dynamically without recreating transports
-public protocol HTTPNetworkTransportDelegate: class {
-    func intercept() -> HTTPNetworkTransportInterception
-}
-
-/// An encapsulation of state for a single request (response/error) pair. If any method returns non-null it will be used in the http pipeline
-public protocol HTTPNetworkTransportInterception {
-    func willSend(request: URLRequest) -> URLRequest?
-    func didRecieve(error: Error) -> Error?
-    func didRecieve(response: HTTPURLResponse) -> HTTPURLResponse?
-}
-
 /// A network transport that uses HTTP POST requests to send GraphQL operations to a server, and that uses `URLSession` as the networking implementation.
 public class HTTPNetworkTransport: NetworkTransport {
     let url: URL
     let session: URLSession
     let serializationFormat = JSONSerializationFormat.self
-    public weak var delegate: HTTPNetworkTransportDelegate?
 
     /// Creates a network transport with the specified server URL and session configuration.
     ///
@@ -88,25 +75,15 @@ public class HTTPNetworkTransport: NetworkTransport {
 
         let body = requestBody(for: operation)
         request.httpBody = try! serializationFormat.serialize(value: body)
-        let interception = delegate?.intercept()
-        if let interceptedRequest = interception?.willSend(request: request) {
-            request = interceptedRequest
-        }
+
         let task = session.dataTask(with: request) { (data: Data?, response: URLResponse?, error: Error?) in
-            if var error = error {
-                if let interceptedError = interception?.didRecieve(error: error) {
-                    error = interceptedError
-                }
+            if error != nil {
                 completionHandler(nil, error)
                 return
             }
 
-            guard var httpResponse = response as? HTTPURLResponse else {
+            guard let httpResponse = response as? HTTPURLResponse else {
                 fatalError("Response should be an HTTPURLResponse")
-            }
-
-            if let interceptedResponse = interception?.didRecieve(response: httpResponse) {
-                httpResponse = interceptedResponse
             }
 
             if (!httpResponse.isSuccessful) {
@@ -123,9 +100,7 @@ public class HTTPNetworkTransport: NetworkTransport {
                 guard let body =  try self.serializationFormat.deserialize(data: data) as? JSONObject else {
                     throw GraphQLHTTPResponseError(body: data, response: httpResponse, kind: .invalidResponse)
                 }
-
-                let response = GraphQLResponse(operation: operation, body: body, response: httpResponse)
-
+                let response = GraphQLResponse(operation: operation, body: body, context: httpResponse.allHeaderFields)
                 completionHandler(response, nil)
             } catch {
                 completionHandler(nil, error)

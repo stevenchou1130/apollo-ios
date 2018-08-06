@@ -14,12 +14,16 @@ public struct GraphQLResult<Data> {
   public let source: Source
     
   let dependentKeys: Set<CacheKey>?
+
+  public let context : GraphQLContext?
   
-  init(data: Data?, errors: [GraphQLError]?, source: Source, dependentKeys: Set<CacheKey>?) {
+  init(data: Data?, errors: [GraphQLError]?, source: Source, dependentKeys: Set<CacheKey>?, context: GraphQLContext? = nil) {
     self.data = data
     self.errors = errors
     self.source = source
     self.dependentKeys = dependentKeys
+    self.context = context
   }
 }
 
+public typealias GraphQLContext = [AnyHashable: Any]
